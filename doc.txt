@@ -1,0 +1,27 @@
+How it works:
+
+1) A special startup routine allocates memory for the histogram and either calls profil() or sets up a clock signal handler. This routine (monstartup) can be invoked in several ways. On Linux systems, a special profiling startup file gcrt0.o, which invokes monstartup before main, is used instead of the default crt0.o. Use of this special startup file is one of the effects of using gcc ... -pg to link. On SPARC systems, no special startup files are used. Rather, the mcount(__gnu_mcount_nc) routine, when it is invoked for the first time (typically when main is called), calls monstartup.
+
+mcount() // __gnu_mcount_nc
+{
+	__mcount_internal(frompc, selfpc)
+	{
+		monstartup();
+	}
+}
+monstartup()
+{
+	profil();
+}
+
+2) profil() system call, which registers a memory array with the kernel, along with a scale factor that determines how the program's address space maps into the array. Typical scaling values cause every 2 to 8 bytes of address space to map into a single array slot. On every tick of the system clock (assuming the profiled program is running), the value of the program counter is examined and the corresponding slot in the memory array is incremented. Since this is done in the kernel, which had to interrupt the process anyway to handle the clock interrupt, very little additional system overhead is required.
+
+3) every function call mcount (or _mcount, or __mcount, depending on the OS and compiler) as one of its first operations. The mcount routine, included in the profiling library, is responsible for recording in an in-memory call graph table both its parent routine (the child) and its parent's parent. This is typically done by examining the stack frame to find both the address of the child, and the return address in the original parent. Since this is a very machine-dependent operation, mcount itself is typically a short assembly-language stub routine that extracts the required information, and then calls __mcount_internal (a normal C function) with two arguments - frompc and selfpc. __mcount_internal is responsible for maintaining the in-memory call graph, which records frompc, selfpc, and the number of times each of these call arcs was traversed.
+
+GCC Version 2 provides a magical function (__builtin_return_address), which allows a generic mcount function to extract the required information from the stack frame. However, on some architectures, most notably the SPARC, using this builtin can be very computationally expensive, and an assembly language version of mcount is used for performance reasons. 
+
+
+
+
+
+4) The profiling library also includes a function (mcleanup) which is typically registered using atexit() to be called as the program exits, and is responsible for writing the file gmon.out. Profiling is turned off, various headers are output, and the histogram is written, followed by the call-graph arcs and the basic-block counts.

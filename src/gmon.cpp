@@ -40,8 +40,10 @@
 #include <e32cmn.h>
 #include <e32def.h>
 
+extern "C"{
 #include "gmon.h"
 #include "profil.h"
+}
 
 #define MINUS_ONE_P (-1)
 
@@ -53,17 +55,58 @@ static int	s_scale;
 
 static void moncontrol(int mode);
 
-void errorReport(const TDesC8 &aDes)
-{
-    TAutoClose<RFs> fs;
-    User::LeaveIfError(fs.iObj.Connect());
-    TAutoClose<RFile> file;
-    file.iObj.Create(fs.iObj, _L("e:\\data\\gmonerr"), EFileShareAny  | EFileWrite);
-    file.iObj.Write(aDes);
-}
+void errorReport(const TDesC8 &aDes);
 
 _LIT8(Kmonstartup,"monstartup: out of memory\n");
 _LIT8(KAllocZ,"User::AllocZ args: %d\t%d\t%d\n");
+
+struct SymbianData: public CBase
+{
+	CActiveScheduler* iScheduler = nullptr;
+	CPeriodic* 		  iTask = nullptr;
+	TAutoClose<RFs> gprofFs;
+	TAutoClose<RFile> iLog;
+	
+	static SymbianData* NewL()
+	{
+		SymbianData* self = new(ELeave)SymbianData();
+		CleanupStack::PushL(self);
+		self->ConstructL();
+		CleanupStack::Pop();
+		return self;
+	}
+	
+	void ConstructL()
+	{
+		// Create an active scheduler for the thread.
+		// An active scheduler is needed to manage one or more active 
+		// objects.
+		User::LeaveIfNull(iScheduler = new (ELeave) CActiveScheduler());
+		
+		// Use the cleanup stack to ensure the active scheduler
+		// is deleted in the event of a leave.
+		CleanupStack::PushL(iScheduler);
+
+		// Install the active scheduler for the current thread.
+		CActiveScheduler::Install(iScheduler);
+
+		User::LeaveIfNull(iTask = CPeriodic::NewL(CActive::EPriorityHigh));
+		User::LeaveIfError(gprofFs.iObj.Connect());
+		
+		User::LeaveIfError(
+			iLog.iObj.Replace(gprofFs.iObj, _L("e:\\data\\gmon.log"), EFileShareAny  | EFileWrite)
+		);
+
+		TCallBack cb(Tick);
+		iTask->Start(0, 100, cb);
+		CActiveScheduler::Start();
+	}
+	
+	~SymbianData() {
+		CleanupStack::PopAndDestroy(2, iScheduler);
+	}
+};
+static SymbianData* symbian_epoc;
 
 void monstartup (size_t lowpc, size_t highpc) {
 	register size_t o;
@@ -86,7 +129,7 @@ void monstartup (size_t lowpc, size_t highpc) {
 		p->tolimit = MAXARCS;
 	}
 	p->tossize = p->tolimit * sizeof(struct tostruct);
-	TBuf8<35> dbuf;
+	TBuf8<40> dbuf;
 	dbuf.Format(KAllocZ, p->kcountsize, p->fromssize, p->tossize);
 	errorReport(KAllocZ);
 
@@ -134,7 +177,6 @@ _LIT8(Kmcleanup1,"[mcleanup1] kcount 0x%x ssiz %d\n");
 _LIT8(Kmcleanup2,"[mcleanup2] frompc 0x%x selfpc 0x%x count %d\n");
 
 void _mcleanup(void) {
-	int fd;
 	int hz;
 	int fromindex;
 	int endfrom;
@@ -144,17 +186,10 @@ void _mcleanup(void) {
 	struct gmonparam *p = &_gmonparam;
 	struct gmonhdr gmonhdr, *hdr;
 	TBuf8<8> proffile;
-#ifdef DEBUG
-	int log;
-	TBuf8<35> dbuf;
-//	char dbuf[200];
-#endif
 
 	TAutoClose<RFs> fs;
-	User::LeaveIfError(fs.iObj.Connect());
-	
-	TAutoClose<RFile> file;
-	
+    fs.iObj.SetHandle(symbian_epoc->gprofFs.iObj.Handle());
+
 	if (p->state == GMON_PROF_ERROR) {
 		errorReport(K_mcleanup);
 		return;
@@ -162,18 +197,18 @@ void _mcleanup(void) {
 	hz = PROF_HZ;
 	moncontrol(0); /* stop */
 	
-	fd = file.iObj.Replace(fs.iObj, _L("e:\\data\\gmon.out"), EFileShareAny  | EFileWrite);
-	if(fd < 0) return;
+	TAutoClose<RFile> file;
+	User::LeaveIfError(
+		file.iObj.Replace(fs.iObj, _L("e:\\data\\gmon.out"), EFileShareAny  | EFileWrite)
+	);
 	
 #ifdef DEBUG
-	TAutoClose<RFile> dbgFile;
-	log = dbgFile.iObj.Replace(fs.iObj, _L("e:\\data\\gmon.log"),
-			EFileShareAny  | EFileWrite);
-	if(log < 0) User::PanicUnexpectedLeave();
+	int log;
+	TBuf8<35> dbuf;
+//	char dbuf[200];
 	
 	dbuf.Format(Kmcleanup1, p->kcount, p->kcountsize);
-
-	dbgFile.iObj.Write(dbuf);
+	symbian_epoc->iLog.iObj.Write(dbuf);
 #endif
 	hdr = (struct gmonhdr *)&gmonhdr;
 	hdr->lpc = p->lowpc;
@@ -215,7 +250,6 @@ void _mcleanup(void) {
 //			write(fd, &rawarc, sizeof rawarc);
 		}
 	}
-	CleanupStack::PopAndDestroy( 2, scheduler );
 //	close(fd);
 }
 
@@ -238,15 +272,19 @@ static void moncontrol(int mode) {
 	}
 }
 
-_LIT8(K_mcount_internal,"mcount: tos overflow\n");
+_LIT8(K_mcount_overflow,"mcount: tos overflow\n");
 extern "C"
-void _mcount_internal(uint32_t *frompcindex, uint32_t *selfpc) {
-  
+void _mcount_internal(uint32_t *frompcindex, uint32_t *selfpc)
+{
+  StackInfo(); // call first to lower stack size variation
+
   register struct tostruct	*top;
   register struct tostruct	*prevtop;
   register long			toindex;
   struct gmonparam *p = &_gmonparam;
-
+  
+  if(!symbian_epoc)
+	  symbian_epoc = SymbianData::NewL();
   if (!already_setup) {
     extern char __etext; /* end of text/code symbol, defined by linker */
     already_setup = 1;
@@ -345,40 +383,50 @@ void _mcount_internal(uint32_t *frompcindex, uint32_t *selfpc) {
     return;		/* normal return restores saved registers */
   overflow:
     p->state++; /* halt further profiling */
-    
-	TAutoClose<RFs> fs;
-	User::LeaveIfError(fs.iObj.Connect());
 
-    TAutoClose<RFile> dbgFile;
-	TInt log = dbgFile.iObj.Open(fs.iObj, _L("!:\\data\\gmon.log"),
-    			EFileShareAny  | EFileWrite);
-	if(log < 0) User::PanicUnexpectedLeave();
-
-	dbgFile.iObj.Write(K_mcount_internal);
+	symbian_epoc->iLog.iObj.Write(K_mcount_overflow);
     
 //    #define	TOLIMIT	"mcount: tos overflow\n"
 //    write (2, TOLIMIT, sizeof(TOLIMIT));
   goto out;
 }
 
+//has to be called from the startup code in case the startup code is instrumented too
 void _monInit(void) {
-	// Create an active scheduler for the thread.
-	// An active scheduler is needed to manage one or more active 
-	// objects.
-	scheduler = new (ELeave) CActiveScheduler();
-
-	// Use the cleanup stack to ensure the active scheduler
-	// is deleted in the event of a leave.
-	CleanupStack::PushL( scheduler );
-
-	// Install the active scheduler for the current thread.
-	CActiveScheduler::Install( scheduler );
-	
-	User::LeaveIfNull(task = CPeriodic::New(CActive::EPriorityUserInput));
-	TCallBack cb(Tick);
-	task->Start(0, 100, cb);
-	
-	CActiveScheduler::Start();
+//	CTrapCleanup* cleanup = CTrapCleanup::New(); // TODO: Is CTrapCleanup needed?
+	if(!symbian_epoc)
+		symbian_epoc = SymbianData::NewL();
   _gmonparam.state = GMON_PROF_OFF;
   already_setup = 0;
+}
+
+
+void errorReport(const TDesC8 &aDes)
+{
+    TAutoClose<RFs> fs;
+    fs.iObj.SetHandle(symbian_epoc->gprofFs.iObj.Handle());
+    TAutoClose<RFile> file;
+    file.iObj.Replace(fs.iObj, _L("e:\\data\\gmonerr"), EFileShareAny  | EFileWrite);
+    file.iObj.Write(aDes);
+}
+
+_LIT8(KUnaviableStack, "thread doesn't have a user mode stack, or it has terminated.\n");
+_LIT8(KStackSize, "Stack size: %d");
+extern "C" void StackInfo()
+{
+    TAutoClose<RFs> fs;
+    fs.iObj.SetHandle(symbian_epoc->gprofFs.iObj.Handle());
+
+    TAutoClose<RFile> file;
+    file.iObj.Replace(fs.iObj, _L("e:\\data\\appstack"), EFileShareAny  | EFileWrite);
+    
+	TThreadStackInfo stackInfo;
+	RThread thread;
+	if(thread.StackInfo(stackInfo) != KErrNone){
+	    file.iObj.Write(KUnaviableStack);
+		return;
+	}
+	TBuf8<40> dbuf;
+	dbuf.Format(KStackSize, stackInfo.iBase - stackInfo.iLimit);
+	file.iObj.Write(KStackSize);
 }

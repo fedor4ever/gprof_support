@@ -1,0 +1,4 @@
+This library use Symbian OS system calls an therefore reqiure cleanup stack.
+If you profile native Symbian GUI app - your app alredy has cleanup stack, enjoy and profile =)
+
+In other case see profile_me.cpp.

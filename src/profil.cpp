@@ -11,8 +11,11 @@
 /*
  * This file is taken from Cygwin distribution, adopted to be used for bare embeeded targets.
  */
+#include <e32cmn.h>
 
+extern "C"{
 #include "profil.h"
+}
 
 /* global profinfo for profil() call */
 static struct profinfo prof = {
@@ -20,7 +23,7 @@ static struct profinfo prof = {
 };
 
 /* sample the current program counter */
-TInt Tick(void*) {
+signed int Tick(void*) {
   static size_t pc, idx;
 
   if (prof.state==PROFILE_ON) {

@@ -20,8 +20,4 @@ monstartup()
 
 GCC Version 2 provides a magical function (__builtin_return_address), which allows a generic mcount function to extract the required information from the stack frame. However, on some architectures, most notably the SPARC, using this builtin can be very computationally expensive, and an assembly language version of mcount is used for performance reasons. 
 
-
-
-
-
 4) The profiling library also includes a function (mcleanup) which is typically registered using atexit() to be called as the program exits, and is responsible for writing the file gmon.out. Profiling is turned off, various headers are output, and the histogram is written, followed by the call-graph arcs and the basic-block counts.

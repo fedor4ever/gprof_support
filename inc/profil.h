@@ -1,7 +1,6 @@
 /* profil.h: gprof profiling header file
 
    Copyright 1998, 1999, 2000, 2001, 2002 Red Hat, Inc.
-   Copyright (C) 2020 Stryzhniou Fiodar
 
 This file is part of Cygwin.
 
@@ -17,13 +16,11 @@ details. */
 #ifndef __PROFIL_H__
 #define __PROFIL_H__
 
-#include <e32cmn.h>
-
 typedef unsigned int size_t;
 typedef unsigned short u_short;
 typedef unsigned int u_int;
 typedef u_int uint32_t;
-TInt Tick(void*);
+signed int Tick(void*);
 
 /* profiling frequency.  (No larger than 1000) */
 #define PROF_HZ			1000

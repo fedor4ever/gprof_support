@@ -44,14 +44,10 @@
 #ifndef __P
 #define __P(x) x
 #endif
-
-class CPeriodic;
-class CActiveScheduler;
-
+#include "profil.h"
 /* On POSIX systems, profile.h is a KRB5 header.  To avoid collisions, just
    pull in profile.h's content here.  The profile.h header won't be provided
    by Mingw-w64 anymore at one point. */
-#include "profil.h"
 #if 0
 #include <profile.h>
 #else
@@ -176,11 +172,7 @@ extern struct gmonparam _gmonparam;
 #define	GMON_PROF_ERROR	2
 #define	GMON_PROF_OFF	3
 
-CPeriodic 			* task;
-CActiveScheduler	* scheduler;
-
-void _mcleanup(void); /* routine to be called to write gmon.out file */
-void _monInit(void); /* initialization routine */
-void errorReport(const TDesC8 &aDes);
+__attribute__((destructor)) void _mcleanup(void); /* routine to be called to write gmon.out file */
+void _monInit(void); /* has to be called from the startup code in case the startup code is instrumented too */
 
 #endif /* !_SYS_GMONH_ */
